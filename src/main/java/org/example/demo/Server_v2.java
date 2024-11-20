@@ -18,6 +18,9 @@ public class Server_v2 {
     private static final int PORT = 12345;
     private static Queue<Player> Players = new LinkedList<>();
 
+    private static Queue<Player> Waiters = new LinkedList<>(); // 等待被人挑战
+    private static Map<String,Boolean> Waiters_to_user = new HashMap<>(); // 等待被人挑战
+
     private static ExecutorService clientHandlerPool = Executors.newCachedThreadPool(); // 用于处理客户端的线程池
 
     private static ExecutorService gameExecutor = Executors.newCachedThreadPool();
@@ -30,6 +33,18 @@ public class Server_v2 {
         try (ServerSocket serverSocket = new ServerSocket(PORT)) {
             userDatabase.put("1","1");
             userDatabase.put("2","2");
+            userDatabase.put("alice","2");
+            userDatabase.put("bob","3");
+            userDatabase.put("wyx","4");
+
+            userIsLogged.put("wyx",true);
+            userIsLogged.put("bob",true);
+            userIsLogged.put("alice",false);
+
+            userRecords.put("alice",new Integer[]{3,2});
+            userRecords.put("bob",new Integer[]{4,2});
+            userRecords.put("wyx",new Integer[]{7,2});
+
             System.out.println("Server is running...");
             while (true) {
                 try {
@@ -70,6 +85,7 @@ public class Server_v2 {
                         player.out.writeObject("SUCCESS");
                         player.out.flush();
                         player.username = username;
+                        userIsLogged.put(username, true);
                     } else {
                         player.out.writeObject("FAIL");
                         player.out.flush();
@@ -89,26 +105,72 @@ public class Server_v2 {
         }
 
             // 登陆成功，展示大厅页面
-//            while (true){
+            while (true){
+                System.out.println("loop");
                 String require = (String) player.in.readObject();
                 if (require.equals("suiji")) {
                     player.out.writeObject("SUCCESS");
                     player.out.flush();
-                    suiji(player); // 调用匹配方法
+                    synchronized (player.lock) { // 确保对 lock 对象进行同步
+                        try {
+                            suiji(player);
+                            player.lock.wait(); // 阻塞当前线程，等待唤醒
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            System.err.println("Thread interrupted: " + e.getMessage());
+                        }
+                    }
+                }else if (require.equals("choose")){
+                    System.out.println("begin sent");
+                    player.out.writeObject(Waiters_to_user);
+                    player.out.writeObject(userRecords);
+                    player.out.flush();
+                    System.out.println("sent success");
+                }else if (require.equals("showUsers")){
+                    System.out.println("begin sent");
+                    player.out.writeObject(userIsLogged);
+                    player.out.writeObject(userRecords);
+                    player.out.flush();
+                    System.out.println("sent success");
+                }else if (require.equals("challenge")){
+                    String challengePlayer = (String) player.in.readObject();
+                    Waiters_to_user.remove(challengePlayer);
+                    for(Player player_wait :Waiters){
+                        if (challengePlayer.equals(player_wait.username)){
+                            Waiters.remove(player_wait);
+                            player.out.writeObject("you are challenging "+challengePlayer);
+                            player.out.flush();
+                            synchronized (player.lock) { // 确保对 lock 对象进行同步
+                                try {
+                                    gameExecutor.execute(new GameSession(player, player_wait));
+                                    player.lock.wait(); // 阻塞当前线程，等待唤醒
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    System.err.println("Thread interrupted: " + e.getMessage());
+                                }
+                            }
+                            break;
+                        }
+                    }
 
-//                    synchronized (player.lock) { // 确保对 lock 对象进行同步
-//                        try {
-//                            suiji(player); // 调用匹配方法
-//                            player.lock.wait(); // 阻塞当前线程，等待唤醒
-//                        } catch (InterruptedException e) {
-//                            Thread.currentThread().interrupt(); // 恢复中断标志
-//                            System.err.println("Thread interrupted: " + e.getMessage());
-//                        }
-//                    }
+                }else if(require.equals("enterQueue")){
+                    Waiters.add(player);
+                    Waiters_to_user.put(player.username,true);
+                    synchronized (player.lock) { // 确保对 lock 对象进行同步
+                        try {
+                            player.out.writeObject("SUCCESS");
+                            player.out.writeObject("waiting for another player...");
+                            player.out.flush();
+                            System.out.println(player.username + " in queue");
+                            player.lock.wait(); // 阻塞当前线程，等待唤醒
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            System.err.println("Thread interrupted: " + e.getMessage());
+                        }
+                    }
+
                 }
-
-
-      //      }
+            }
 
         } catch (IOException e) {
             System.err.println("Server error: " + e.getMessage());
@@ -219,7 +281,7 @@ class GameSession implements Runnable {
         } catch (IOException | ClassNotFoundException e) {
             logger.log(Level.SEVERE, "Game session error: ", e.getMessage());
         } finally {
-            closeConnections();
+            //closeConnections();
         }
     }
 
@@ -335,12 +397,12 @@ class GameSession implements Runnable {
                         player2.out.writeInt(3);
                         player2.out.flush();
                     }
-//                    synchronized (player1.lock) {
-//                        player1.lock.notify();
-//                    }
-//                    synchronized (player2.lock) {
-//                        player2.lock.notify();
-//                    }
+                    synchronized (player1.lock) {
+                        player1.lock.notify();
+                    }
+                    synchronized (player2.lock) {
+                        player2.lock.notify();
+                    }
                     return;
                 }
                 System.out.println("> Turn completed. Next player's turn.");
